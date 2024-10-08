@@ -57,7 +57,7 @@ def button_callback(update: Update, context: CallbackContext) -> None:
         start_text = f"<b>hello {user_name}.\n\nMy name is {bot_name}.\n\nI can Provide You Terabox Videos \n<blockquote>owned by  : <a href=\"https://t.me/xaekks\">kissu</a>\n</blockquote></b>"
         welcome_image_url = random.choice(welcome_images)
         reply_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Link 1", url="https://t.me/link1"), InlineKeyboardButton("Link 2", url="https://t.me/link2"), InlineKeyboardButton("Link 3", url="https://t.me/link3")],
+            [InlineKeyboardButton("Link 1", url="https://t.me/kissubots"), InlineKeyboardButton("Link 2", url="https://t.me/kissuxbots"), InlineKeyboardButton("Link 3", url="https://t.me/kissudev")],
             [InlineKeyboardButton("Help", callback_data='help'), InlineKeyboardButton("About", callback_data='about')]
         ])
         query.edit_message_media(media=InputMediaPhoto(media=welcome_image_url, caption=start_text, parse_mode='HTML'), reply_markup=reply_markup)
