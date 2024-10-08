@@ -1,9 +1,28 @@
 
 import os
 import random
+import logging
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from dotenv import load_dotenv
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
+from pymongo import MongoClient
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Connect to MongoDB
+mongo_client = MongoClient(os.getenv("MONGODB_URI"))
+db_name = os.getenv("MONGODB_DB_NAME")
+print(f"MongoDB Database Name: {db_name}")
+mongo_db = mongo_client[db_name]
+video_collection = mongo_db["videos"]
+
+# Set up logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -14,6 +33,7 @@ print(f"Bot Token: {bot_token}")
 bot = Bot(token=bot_token)
 
 def start(update: Update, context: CallbackContext) -> None:
+    logger.info(f"Received /start command from user: {update.message.from_user.id}")
     # Fetch welcome images from environment variable and select one randomly
     welcome_images = os.getenv("WELCOME_IMAGES").split(',')
     welcome_image_url = random.choice(welcome_images)
@@ -31,6 +51,7 @@ def start(update: Update, context: CallbackContext) -> None:
 
 def button_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
+    logger.info(f"Button callback received with data: {query.data} from user: {query.from_user.id}")
     query.answer()
 
     if query.data == 'about':
@@ -64,24 +85,87 @@ def button_callback(update: Update, context: CallbackContext) -> None:
         query.edit_message_text(text=f"You clicked: {query.data}")
 
 def check_user_joined_channels(user_id: int) -> bool:
+    logger.info(f"Checking if user {user_id} has joined required channels")
     channels = ["@kissubots", "@kissuxbots", "@kissudev"]
     for channel in channels:
         try:
             member = bot.get_chat_member(chat_id=channel, user_id=user_id)
             if member.status not in ["member", "administrator", "creator"]:
+                logger.info(f"User {user_id} has not joined channel {channel}")
                 return False
-        except:
+        except Exception as e:
+            logger.error(f"Error checking user {user_id} in channel {channel}: {e}")
             return False
     return True
 
 def is_valid_domain(url: str) -> bool:
+    logger.info(f"Validating domain for URL: {url}")
     valid_domains = os.getenv("VALID_DOMAINS").split(',')
     domain = url.split('/')[2]
-    return domain in valid_domains
+    is_valid = domain in valid_domains
+    if not is_valid:
+        logger.warning(f"Invalid domain: {domain}")
+    return is_valid
 
-def download_video(update: Update, context: CallbackContext) -> None:
+import requests
+
+async def download_video(url, reply_msg, user_mention, user_id):
+    from time import time
+    from time import time
+    try:
+        logger.info(f"Sending request to download video from URL: {url}")
+        response = requests.get(f"https://teraboxvideodownloader.nepcoderdevs.workers.dev/?url={url}")
+        response.raise_for_status()
+        data = response.json()
+        logger.info(f"Received response: {data}")
+ 
+        resolutions = data["response"][0]["resolutions"]
+        fast_download_link = resolutions["Fast Download"]
+        hd_download_link = resolutions["HD Video"]
+        thumbnail_url = data["response"][0]["thumbnail"]
+        video_title = data["response"][0]["title"]
+        logger.info(f"Video details - Title: {video_title}, Fast Download: {fast_download_link}, HD Download: {hd_download_link}, Thumbnail: {thumbnail_url}")
+ 
+        # Save video details and file in MongoDB
+        video_details = {
+            "user_id": user_id,
+            "url": url,
+            "video_title": video_title,
+            "fast_download_link": fast_download_link,
+            "hd_download_link": hd_download_link,
+            "thumbnail_url": thumbnail_url,
+            "timestamp": time(),
+            "video_file": response.content  # Save the video file content
+        }
+        video_collection.insert_one(video_details)
+        logger.info(f"Video details saved in MongoDB for user: {user_id}")
+ 
+        reply_msg.reply_text(f"Video Title: {video_title}\nFast Download: {fast_download_link}\nHD Download: {hd_download_link}\nThumbnail: {thumbnail_url}")
+        logger.info(f"Video details sent to user: {user_id}")
+ 
+        # Retrieve video details from MongoDB
+        video_details = video_collection.find_one({"user_id": user_id, "url": url})
+        if video_details:
+            video_file = video_details["video_file"]
+            video_title = video_details["video_title"]
+            reply_msg.reply_video(video=video_file, filename=f"{video_title}.mp4")
+            logger.info(f"Video sent to user: {user_id}")
+
+            # Delete video details from MongoDB after sending
+            video_collection.delete_one({"user_id": user_id, "url": url})
+            logger.info(f"Video details deleted from MongoDB for user: {user_id}")
+        else:
+            logger.error(f"Video details not found in MongoDB for user: {user_id}")
+            reply_msg.reply_text('Failed to retrieve video details. Please try again later.')
+    except Exception as e:
+        logger.error(f"Error downloading video: {e}")
+        reply_msg.reply_text('An error occurred while downloading the video. Please try again later.')
+
+def handle_download_video(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
+    logger.info(f"Received video download request from user: {user_id}")
     if not check_user_joined_channels(user_id):
+        logger.info(f"User {user_id} has not joined required channels")
         reply_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("Channel 1", url="https://t.me/kissubots")],
             [InlineKeyboardButton("Channel 2", url="https://t.me/kissuxbots")],
@@ -89,11 +173,14 @@ def download_video(update: Update, context: CallbackContext) -> None:
         ])
         update.message.reply_text('Join all channels to use me', reply_markup=reply_markup)
         return
-
     url = update.message.text
     if not is_valid_domain(url):
+        logger.warning(f"Invalid domain for URL: {url}")
         update.message.reply_text('Invalid domain. Please provide a valid Terabox link.')
         return
+    reply_msg = update.message.reply_text('Downloading video...')
+    user_mention = update.message.from_user.mention_html()
+    context.bot.loop.create_task(download_video(url, reply_msg, user_mention, user_id))
 
     import requests
     from telegram import InputFile
@@ -173,9 +260,10 @@ def main() -> None:
     updater = Updater(token=bot_token, use_context=True)
     dispatcher = updater.dispatcher
 
-    dispatcher.add_handler(CommandHandler("start", start))
+    # Command handlers
+    dispatcher.add_handler(CommandHandler('start', start))
     dispatcher.add_handler(CallbackQueryHandler(button_callback))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, download_video))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_download_video))
 
     updater.start_polling()
     updater.idle()
