@@ -95,8 +95,79 @@ def download_video(update: Update, context: CallbackContext) -> None:
         update.message.reply_text('Invalid domain. Please provide a valid Terabox link.')
         return
 
-    # Placeholder for video download logic
-    update.message.reply_text('Downloading video...')
+    import requests
+    from telegram import InputFile
+    from time import time
+    from pymongo import MongoClient
+
+    # Connect to MongoDB
+    mongodb_uri = os.getenv("MONGODB_URI")
+    mongodb_db_name = os.getenv("MONGODB_DB_NAME")
+    client = MongoClient(mongodb_uri)
+    db = client[mongodb_db_name]
+    downloads_collection = db.downloads
+
+    # Load environment variables
+    log_channel_id = int(os.getenv("LOG_CHANNEL_ID"))
+    api_url = os.getenv("API_URL").format(url=url)
+
+    # Log the start of the download
+    download_log = {
+        "user_id": user_id,
+        "url": url,
+        "status": "started",
+        "timestamp": time()
+    }
+    downloads_collection.insert_one(download_log)
+
+    # Download video
+    update.message.reply_text('Starting video download...')
+    response = requests.get(api_url, stream=True)
+    update.message.reply_text('Video download request sent...')
+    if response.status_code == 200:
+        update.message.reply_text('Video download started...')
+    else:
+        update.message.reply_text(f'Failed to start video download. Status code: {response.status_code}')
+        return
+    update.message.reply_text('Video download in progress...')
+
+    total_size = int(response.headers.get('content-length', 0))
+    block_size = 1024
+    progress = 0
+    start_time = time()
+
+    with open('video.mp4', 'wb') as file:
+        for data in response.iter_content(block_size):
+            progress += len(data)
+            file.write(data)
+            done = int(50 * progress / total_size)
+            speed = progress / (time() - start_time)
+            eta = (total_size - progress) / speed
+            progress_bar = f"\n<b>╭━━━━❰progress bar❱➜\n➜ 🗃️ size: {total_size} | {progress}\n➜ ⏳️ done: {done}%\n➜ 🚀 speed: {speed:.2f}/s\n➜ ⏰️ eta: {eta:.2f}s\n╰━━━━━━━━━━━━━━━➜ </b>"
+            update.message.reply_text(progress_bar, parse_mode='HTML')
+
+    # Log the completion of the download
+    download_log["status"] = "completed"
+    download_log["timestamp"] = time()
+    downloads_collection.insert_one(download_log)
+
+    # Log the completion of the download
+    download_log["status"] = "completed"
+    download_log["timestamp"] = time()
+    downloads_collection.insert_one(download_log)
+
+    # Send video to log channel with filename
+    filename = 'video.mp4'
+    with open(filename, 'rb') as file:
+        bot.send_video(chat_id=log_channel_id, video=InputFile(file, filename=filename), caption="Downloaded video")
+
+    # Send video to user
+    with open(filename, 'rb') as file:
+        update.message.reply_video(video=InputFile(file, filename=filename), caption="Here is your video")
+
+    # Send video to user
+    with open('video.mp4', 'rb') as file:
+        update.message.reply_video(video=InputFile(file), caption="Here is your video")
 
 def main() -> None:
     updater = Updater(token=bot_token, use_context=True)
