@@ -46,7 +46,7 @@ def start(update: Update, context: CallbackContext) -> None:
         [InlineKeyboardButton("Channel 1", url="https://t.me/kissubots"), InlineKeyboardButton("Channel 2", url="https://t.me/kissuxbots"), InlineKeyboardButton("Channel 3", url="https://t.me/kissudev")],
         [InlineKeyboardButton("Help", callback_data='help'), InlineKeyboardButton("About", callback_data='about')]
     ])
-    update.message.reply_photo(photo=welcome_image_url, caption=start_text, parse_mode='HTML', reply_markup=reply_markup)
+    update.message.reply_photo(photo=welcome_image_url, caption=start_text, parse_mode='HTML', reply_markup=reply_markup.to_dict())
 
 
 def button_callback(update: Update, context: CallbackContext) -> None:
@@ -109,7 +109,92 @@ def is_valid_domain(url: str) -> bool:
 
 import requests
 
+import requests
+import aria2p
+from datetime import datetime
+from status import format_progress_bar
+import asyncio
+import os, time
+import logging
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+aria2 = aria2p.API(
+    aria2p.Client(
+        host="http://localhost",
+        port=6800,
+        secret=""
+    )
+)
+options = {
+    "max-tries": "50",
+    "retry-wait": "3",
+    "continue": "true"
+}
+
+aria2.set_global_options(options)
+
 async def download_video(url, reply_msg, user_mention, user_id):
+    response = requests.get(f"https://teraboxvideodownloader.nepcoderdevs.workers.dev/?url={url}")
+    response.raise_for_status()
+    data = response.json()
+
+    resolutions = data["response"][0]["resolutions"]
+    fast_download_link = resolutions["Fast Download"]
+    hd_download_link = resolutions["HD Video"]
+    thumbnail_url = data["response"][0]["thumbnail"]
+    video_title = data["response"][0]["title"]
+
+    try:
+        download = aria2.add_uris([fast_download_link])
+        start_time = datetime.now()
+
+        while not download.is_complete:
+            download.update()
+            percentage = download.progress
+            done = download.completed_length
+            total_size = download.total_length
+            speed = download.download_speed
+            eta = download.eta
+            elapsed_time_seconds = (datetime.now() - start_time).total_seconds()
+            progress_text = format_progress_bar(
+                filename=video_title,
+                percentage=percentage,
+                done=done,
+                total_size=total_size,
+                status="Downloading",
+                eta=eta,
+                speed=speed,
+                elapsed=elapsed_time_seconds,
+                user_mention=user_mention,
+                user_id=user_id,
+                aria2p_gid=download.gid
+            )
+            await reply_msg.edit_text(progress_text)
+            await asyncio.sleep(2)
+
+        if download.is_complete:
+            file_path = download.files[0].path
+
+            thumbnail_path = "thumbnail.jpg"
+            thumbnail_response = requests.get(thumbnail_url)
+            with open(thumbnail_path, "wb") as thumb_file:
+                thumb_file.write(thumbnail_response.content)
+
+            await reply_msg.edit_text("ᴜᴘʟᴏᴀᴅɪɴɢ...")
+
+            return file_path, thumbnail_path, video_title
+    except Exception as e:
+        logging.error(f"Error handling message: {e}")
+        buttons = [
+            [InlineKeyboardButton("🚀 HD Video", url=hd_download_link)],
+            [InlineKeyboardButton("⚡ Fast Download", url=fast_download_link)]
+        ]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await reply_msg.reply_text(
+            "Fast Download Link For this Video is Broken, Download manually using the Link Below.",
+            reply_markup=reply_markup
+        )
+        return None, None, None
     from time import time
     from time import time
     try:
@@ -238,11 +323,6 @@ def handle_download_video(update: Update, context: CallbackContext) -> None:
     download_log["timestamp"] = time()
     downloads_collection.insert_one(download_log)
 
-    # Log the completion of the download
-    download_log["status"] = "completed"
-    download_log["timestamp"] = time()
-    downloads_collection.insert_one(download_log)
-
     # Send video to log channel with filename
     filename = 'video.mp4'
     with open(filename, 'rb') as file:
@@ -252,9 +332,7 @@ def handle_download_video(update: Update, context: CallbackContext) -> None:
     with open(filename, 'rb') as file:
         update.message.reply_video(video=InputFile(file, filename=filename), caption="Here is your video")
 
-    # Send video to user
-    with open('video.mp4', 'rb') as file:
-        update.message.reply_video(video=InputFile(file), caption="Here is your video")
+
 
 def main() -> None:
     updater = Updater(token=bot_token, use_context=True)
@@ -267,6 +345,51 @@ def main() -> None:
 
     updater.start_polling()
     updater.idle()
+
+async def upload_video(client, file_path, thumbnail_path, video_title, reply_msg, collection_channel_id, user_mention, user_id, message):
+    file_size = os.path.getsize(file_path)
+    uploaded = 0
+    start_time = datetime.now()
+    last_update_time = time.time()
+
+    async def progress(current, total):
+        nonlocal uploaded, last_update_time
+        uploaded = current
+        percentage = (current / total) * 100
+        elapsed_time_seconds = (datetime.now() - start_time).total_seconds()
+        
+        if time.time() - last_update_time > 2:
+            progress_text = format_progress_bar(
+                filename=video_title,
+                percentage=percentage,
+                done=current,
+                total_size=total,
+                status="Uploading",
+                eta=(total - current) / (current / elapsed_time_seconds) if current > 0 else 0,
+                speed=current / elapsed_time_seconds if current > 0 else 0,
+                elapsed=elapsed_time_seconds,
+                user_mention=user_mention,
+                user_id=user_id,
+                aria2p_gid=""
+            )
+            try:
+                await reply_msg.edit_text(progress_text)
+                last_update_time = time.time()
+            except Exception as e:
+                logging.warning(f"Error updating progress message: {e}")
+
+    with open(file_path, 'rb') as file:
+        collection_message = await client.send_video(
+            chat_id=collection_channel_id,
+            video=file,
+            thumb=thumbnail_path,
+            caption=video_title,
+            supports_streaming=True,
+            progress=progress
+        )
+
+    await reply_msg.edit_text(f"Video uploaded successfully to {collection_channel_id}!")
+    return collection_message
 
 if __name__ == '__main__':
     main()
